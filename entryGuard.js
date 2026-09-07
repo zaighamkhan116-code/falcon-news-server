@@ -1,6 +1,7 @@
 import express from "express";
 
 const originalJson = express.response.json;
+const originalSend = express.response.send;
 const avg = a => a.length ? a.reduce((s,v)=>s+v,0)/a.length : 0;
 const atr = q => avg(q.slice(-14).map(c=>Math.max(0,(+c.high)-(+c.low))));
 
@@ -46,6 +47,33 @@ function retarget(A,c){
   return {...A,tp1:t1.price,tp2:t2.price,tp1Label:t1.label,tp2Label:t2.label,narrative:(A.narrative||'')+' Targets ignore nearby micro levels: TP1 is the first meaningful structural/liquidity objective and TP2 is the next external objective.',overlays:{...(A.overlays||{}),lines,zones:A.overlays?.zones||[],trendLines:A.overlays?.trendLines||[]}};
 }
 
+function verifiedTouches(line,candles,timeframe){
+  if(!line||!Array.isArray(candles)||!candles.length)return null;
+  const tf=String(line.tf||'').toLowerCase();
+  if(tf!==String(timeframe||'').toLowerCase())return null;
+  const q=candles.filter(c=>+c.time>=+line.startTime&&+c.time<=+line.endTime);
+  if(q.length<3)return null;
+  const a=Math.max(atr(q),1e-12),tol=a*.12;
+  let clusters=0,lastTouch=-99;
+  for(let i=0;i<q.length;i++){
+    const c=q[i],lp=+line.startPrice+(+line.slope)*((+c.time)-(+line.startTime));
+    const wickTouch=(+c.low<=lp+tol&&+c.high>=lp-tol);
+    const bodyCross=Math.min(+c.open,+c.close)<lp-tol&&Math.max(+c.open,+c.close)>lp+tol;
+    const correctSide=line.direction==='BUY'?Math.min(+c.open,+c.close)>=lp-tol:Math.max(+c.open,+c.close)<=lp+tol;
+    if(wickTouch&&!bodyCross&&correctSide){if(i-lastTouch>2)clusters++;lastTouch=i;}
+  }
+  return clusters>=2?clusters:null;
+}
+
+function fixTrendTouches(A,candles,timeframe){
+  if(!A?.overlays?.trendLines)return A;
+  const trendLines=A.overlays.trendLines.map(l=>{
+    const n=verifiedTouches(l,candles,timeframe);
+    return {...l,touches:Number.isFinite(n)?n:null};
+  });
+  return {...A,overlays:{...A.overlays,trendLines}};
+}
+
 function guardAnalysis(A,c){
   if(!A||!c||!['BUY','SELL'].includes(A.bias))return A;
   const atLow=c.pos<.28 || c.downExtension>2.0;
@@ -75,9 +103,28 @@ function guardAnalysis(A,c){
 express.response.json=function(body){
   try{
     if(body?.candles&&body?.analyses){
+      delete body.analyses.MOMENTUM;
       const c=context(body.candles);
-      if(c)body={...body,analyses:Object.fromEntries(Object.entries(body.analyses).map(([k,v])=>[k,guardAnalysis(v,c)]))};
+      if(c){
+        const analyses={};
+        for(const [k,v] of Object.entries(body.analyses)){
+          let out=guardAnalysis(v,c);
+          if(k==='TREND')out=fixTrendTouches(out,body.candles,body.timeframe);
+          analyses[k]=out;
+        }
+        body={...body,analyses};
+      }
     }
   }catch{}
   return originalJson.call(this,body);
+};
+
+express.response.send=function(body){
+  try{
+    if(typeof body==='string'&&body.includes('Falcon Analysis')){
+      body=body.replace('"MOMENTUM",','');
+      body=body.replace("const label=l.tf+' '+(action?'ACTION':'SAFETY')+' · '+l.touches+' touches'","const label=l.tf+' '+(action?'ACTION':'SAFETY')+(Number.isFinite(l.touches)?' · '+l.touches+' verified touches':'')");
+    }
+  }catch{}
+  return originalSend.call(this,body);
 };
