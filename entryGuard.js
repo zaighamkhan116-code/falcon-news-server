@@ -50,7 +50,12 @@ function guardAnalysis(A,c){
 
 express.response.json=function(body){
   try{
-    if(body?.candles&&body?.analyses){const c=context(body.candles);if(c){body={...body,analyses:Object.fromEntries(Object.entries(body.analyses).map(([k,v])=>[k,guardAnalysis(v,c)]))};}
+    if(body?.candles&&body?.analyses){
+      const c=context(body.candles);
+      if(c){
+        body={...body,analyses:Object.fromEntries(Object.entries(body.analyses).map(([k,v])=>[k,guardAnalysis(v,c)]))};
+      }
+    }
   }catch{}
   return originalJson.call(this,body);
 };
